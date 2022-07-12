@@ -1,0 +1,83 @@
+WITH 
+      reco_log AS (
+        Select video_xid,
+        date(timestamp) as day,
+        count(*) as nb_reco
+        from (
+      SELECT
+        resp_item.id AS video_xid,
+        timestamp
+      FROM `dailymotion-rawlogs.recommender.log`,
+      UNNEST(data.response.items) resp_item
+      WHERE DATE(_PARTITIONTIME) >= '2022-07-07'
+      AND DATE(_PARTITIONTIME) <= '2022-07-07'
+      AND data.algorithm = 'homefeed'
+      AND data.env = 'prod'
+      AND resp_item.type = 'Video') as reco_vid
+      group by video_xid, day
+),
+
+      nb_view as (SELECT 
+video_xid, 
+day,
+COUNT(DISTINCT (CONCAT(screen_id, view_id))) AS nb_views
+FROM 
+(SELECT 
+event.event_name,
+event.data.action.gesture,
+DATE(timestamp) as day,
+event.data.view_id AS view_id, 
+event.data.screen.id AS screen_id,
+event.data.metadata.id AS video_xid
+FROM `dailymotion-rawlogs.event_player.life_cycle_videoStart` 
+WHERE 
+event.data.screen.name='explore_feed'
+AND event.data.action.gesture='auto_play'
+AND DATE(_PARTITIONTIME) >= '2022-07-07'
+AND DATE(_PARTITIONTIME) <= '2022-07-07'
+)
+group by 1,2),
+
+        view_and_log as (
+  Select l.*,d.nb_views
+from reco_log l 
+left join nb_view d
+using (video_xid, day) 
+),
+
+        video_catalog as (
+ SELECT 
+xid,
+video.created_time,
+video.owner_username, 
+video.thumbnail_url, 
+video.title, 
+video.channel_name,
+video.aspect_ratio,
+CASE WHEN TRUNC(video.aspect_ratio,1) <=1 THEN 'vertical' 
+     WHEN video.aspect_ratio=1 THEN 'square' 
+     WHEN TRUNC(video.aspect_ratio,1)>1 THEN 'horizontal'
+     ELSE 'other'
+     END as format
+FROM `dailymotion-bidata.video_catalog.current_catalog`
+) 
+
+
+Select 
+vl.video_xid,
+vl.nb_reco,
+vl.day,
+vl.nb_views,
+date(vl.day) as reco_date,
+date(v.created_time) upload_date,
+timestamp_diff(vl.day,date(v.created_time),day) as recency,
+v.title,
+v.owner_username as channel,
+v.thumbnail_url,
+v.format
+from view_and_log vl
+
+left join video_catalog v
+on vl.video_xid = v.xid
+Where day = '2022-07-07'
+and nb_reco >= nb_views /* to avoid any impossible or strange results*/
